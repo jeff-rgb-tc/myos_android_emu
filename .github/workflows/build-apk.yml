@@ -13,15 +13,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Install Android SDK
         shell: bash
@@ -35,7 +34,10 @@ jobs:
           SDKMANAGER=""
           for p in             "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"             "$SDK_ROOT/cmdline-tools/bin/sdkmanager"             "$SDK_ROOT/tools/bin/sdkmanager"
           do
-            if [ -x "$p" ]; then SDKMANAGER="$p"; break; fi
+            if [ -x "$p" ]; then
+              SDKMANAGER="$p"
+              break
+            fi
           done
 
           if [ -z "$SDKMANAGER" ]; then
@@ -50,51 +52,83 @@ jobs:
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
           "$SDKMANAGER" --sdk_root="$SDK_ROOT"             "platform-tools"             "platforms;android-35"             "build-tools;35.0.0"
 
-      - name: Extract project ZIP
+      - name: Find and extract MyOS project
         shell: bash
         run: |
           set -e
-          ZIP="$(find . -maxdepth 3 -type f -name 'myos-android-emulator-github.zip' -print -quit)"
+
+          ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -name 'myos-android-emulator-github.zip' -print -quit)"
+
           if [ -z "$ZIP" ]; then
-            ZIP="$(find . -maxdepth 3 -type f -name '*.zip' -print -quit)"
+            ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -name '*.zip' -print -quit)"
           fi
+
           if [ -z "$ZIP" ]; then
-            echo "Project ZIP not found"
+            echo "ERROR: MyOS Android project ZIP was not found."
+            echo "Repository contents:"
+            find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -print
             exit 1
           fi
 
-          rm -rf extracted
-          mkdir extracted
-          unzip -q "$ZIP" -d extracted
+          echo "Using archive: $ZIP"
 
-          ROOT="$(find extracted -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -print -quit | xargs -r dirname)"
+          rm -rf "$GITHUB_WORKSPACE/extracted"
+          mkdir -p "$GITHUB_WORKSPACE/extracted"
+          unzip -q "$ZIP" -d "$GITHUB_WORKSPACE/extracted"
+
+          ROOT="$(find "$GITHUB_WORKSPACE/extracted" -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -print -quit | xargs -r dirname)"
+
           if [ -z "$ROOT" ]; then
-            echo "Gradle project was not found in the ZIP"
-            find extracted -maxdepth 3 -type f | head -n 100
+            echo "ERROR: Gradle project not found inside ZIP."
+            echo "Archive contents:"
+            find "$GITHUB_WORKSPACE/extracted" -maxdepth 4 -type f -print
             exit 1
           fi
 
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "Gradle project root: $ROOT"
 
-      - name: Verify Gradle
+      - name: Verify Gradle wrapper
         shell: bash
         run: |
           set -e
           cd "$PROJECT_ROOT"
-          test -f gradlew
-          chmod +x gradlew
+
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: gradlew is missing."
+            find . -maxdepth 3 -type f -print
+            exit 1
+          fi
+
+          chmod +x ./gradlew
           ./gradlew --version
 
-      - name: Build APK
+      - name: Build debug APK
         shell: bash
         run: |
           set -e
           cd "$PROJECT_ROOT"
           ./gradlew assembleDebug --stacktrace --no-daemon
 
+      - name: Locate APK
+        shell: bash
+        run: |
+          set -e
+          APK="$(find "$PROJECT_ROOT" -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not produced."
+            find "$PROJECT_ROOT" -type f -name '*.apk' -print
+            exit 1
+          fi
+
+          echo "APK=$APK" >> "$GITHUB_ENV"
+          echo "APK found: $APK"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: myos-emulator-debug-apk
-          path: ${{ env.PROJECT_ROOT }}/app/build/outputs/apk/debug/*.apk
+          path: ${{ env.APK }}
           if-no-files-found: error
+          retention-days: 14
