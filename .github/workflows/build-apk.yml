@@ -45,7 +45,7 @@ jobs:
           fi
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager not found"
+            echo "ERROR: sdkmanager not found"
             exit 1
           fi
 
@@ -58,19 +58,14 @@ jobs:
           set -e
 
           ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -name 'myos-android-emulator-github.zip' -print -quit)"
-
           if [ -z "$ZIP" ]; then
             ZIP="$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -name '*.zip' -print -quit)"
           fi
 
           if [ -z "$ZIP" ]; then
-            echo "ERROR: MyOS Android project ZIP was not found."
-            echo "Repository contents:"
-            find "$GITHUB_WORKSPACE" -maxdepth 3 -type f -print
+            echo "ERROR: project ZIP not found"
             exit 1
           fi
-
-          echo "Using archive: $ZIP"
 
           rm -rf "$GITHUB_WORKSPACE/extracted"
           mkdir -p "$GITHUB_WORKSPACE/extracted"
@@ -79,36 +74,32 @@ jobs:
           ROOT="$(find "$GITHUB_WORKSPACE/extracted" -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -print -quit | xargs -r dirname)"
 
           if [ -z "$ROOT" ]; then
-            echo "ERROR: Gradle project not found inside ZIP."
-            echo "Archive contents:"
+            echo "ERROR: Gradle project not found inside ZIP"
             find "$GITHUB_WORKSPACE/extracted" -maxdepth 4 -type f -print
             exit 1
           fi
 
           echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
-          echo "Gradle project root: $ROOT"
+          echo "Gradle project: $ROOT"
 
-      - name: Verify Gradle wrapper
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build APK
         shell: bash
         run: |
           set -e
           cd "$PROJECT_ROOT"
 
-          if [ ! -f "./gradlew" ]; then
-            echo "ERROR: gradlew is missing."
-            find . -maxdepth 3 -type f -print
-            exit 1
-          fi
+          echo "Gradle version:"
+          gradle --version
 
-          chmod +x ./gradlew
-          ./gradlew --version
+          echo "Project files:"
+          find . -maxdepth 2 -type f -print | sort
 
-      - name: Build debug APK
-        shell: bash
-        run: |
-          set -e
-          cd "$PROJECT_ROOT"
-          ./gradlew assembleDebug --stacktrace --no-daemon
+          gradle assembleDebug --stacktrace --no-daemon
 
       - name: Locate APK
         shell: bash
@@ -117,7 +108,7 @@ jobs:
           APK="$(find "$PROJECT_ROOT" -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not produced."
+            echo "ERROR: APK was not produced"
             find "$PROJECT_ROOT" -type f -name '*.apk' -print
             exit 1
           fi
