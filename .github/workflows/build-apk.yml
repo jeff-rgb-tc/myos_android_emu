@@ -3,7 +3,10 @@ name: Build MyOS Emulator APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -13,37 +16,85 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract project ZIP
-        run: |
-          mkdir extracted
-          unzip -q myos-android-emulator-github.zip -d extracted
-
-          if [ -f extracted/build.gradle ]; then
-            cp -r extracted/. .
-          else
-            ROOT=$(find extracted -maxdepth 2 -name settings.gradle -print -quit | xargs dirname)
-            cp -r "$ROOT"/. .
-          fi
-
-      - name: Setup Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          set -e
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+          SDKMANAGER=""
+          for p in             "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"             "$SDK_ROOT/cmdline-tools/bin/sdkmanager"             "$SDK_ROOT/tools/bin/sdkmanager"
+          do
+            if [ -x "$p" ]; then SDKMANAGER="$p"; break; fi
+          done
+
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT" -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found"
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT"             "platform-tools"             "platforms;android-35"             "build-tools;35.0.0"
+
+      - name: Extract project ZIP
+        shell: bash
+        run: |
+          set -e
+          ZIP="$(find . -maxdepth 3 -type f -name 'myos-android-emulator-github.zip' -print -quit)"
+          if [ -z "$ZIP" ]; then
+            ZIP="$(find . -maxdepth 3 -type f -name '*.zip' -print -quit)"
+          fi
+          if [ -z "$ZIP" ]; then
+            echo "Project ZIP not found"
+            exit 1
+          fi
+
+          rm -rf extracted
+          mkdir extracted
+          unzip -q "$ZIP" -d extracted
+
+          ROOT="$(find extracted -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -print -quit | xargs -r dirname)"
+          if [ -z "$ROOT" ]; then
+            echo "Gradle project was not found in the ZIP"
+            find extracted -maxdepth 3 -type f | head -n 100
+            exit 1
+          fi
+
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Verify Gradle
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_ROOT"
+          test -f gradlew
+          chmod +x gradlew
+          ./gradlew --version
 
       - name: Build APK
+        shell: bash
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          set -e
+          cd "$PROJECT_ROOT"
+          ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: myos-emulator-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: myos-emulator-debug-apk
+          path: ${{ env.PROJECT_ROOT }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
